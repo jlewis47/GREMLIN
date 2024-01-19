@@ -4,14 +4,20 @@ import numpy as np
 
 
 class ramses_sim:
-    class param_list:
-        pass
+    class param_list(dict):
+        # pass
 
         def print_dict(self):
             for key, value in self.__dict__.items():
                 print(key, value)
 
-    def __init__(self, path, SIXDIGITS=False):
+        def __getattr__(self, item):
+            return super().__getitem__(item)
+
+        def __setattr__(self, item, value):
+            return super().__setitem__(item, value)
+
+    def __init__(self, path, nml=None):
         self.path = path
 
         self.namelist = self.param_list()
@@ -19,14 +25,14 @@ class ramses_sim:
         for key, value in nml_params.items():
             setattr(self.namelist, key, value)
 
-        snaps, snap_numbers = get_snaps(path, SIXDIGITS=SIXDIGITS)
+        snaps, snap_numbers = get_snaps(path)
         self.snaps = snaps
         self.snap_numbers = snap_numbers
 
         first_snap = snap_numbers[0]
-        first_info_params = get_info_params(path, first_snap, SIXDIGITS=SIXDIGITS)
+        first_info_params = get_info_params(path, first_snap)
 
-        last_info_params = get_info_params(path, snap_numbers[-1], SIXDIGITS=SIXDIGITS)
+        last_info_params = get_info_params(path, snap_numbers[-1])
 
         self.aexp_stt = np.float64(first_info_params["aexp"])
         self.aexp_end = np.float64(last_info_params["aexp"])
@@ -124,6 +130,36 @@ def read_info_file(fname):
     infos = {}
 
     with open(fname, "r") as f:
+        for il, line in enumerate(f):
+            # if line[0] != '#' or line[0] != ' ':
+            if "=" in line:
+                # print('|',line,'|')
+                key, value = line.split("=")
+                key = key.strip()
+                value = value.strip()
+                if not "." in value:
+                    infos[key] = int(value)
+                else:
+                    infos[key] = float(value)
+
+                infos[key] = value
+
+            if il == 17:
+                break
+    return infos
+
+
+def get_info_params(path, snap, SIXDIGITS=False):
+    if not SIXDIGITS:
+        snap_str = f"{snap:05d}"
+    else:
+        snap_str = f"{snap:06d}"
+
+    infos = {}
+
+    with open(
+        os.path.join(path, f"output_{snap_str}", f"info_{snap_str}.txt"), "r"
+    ) as f:
         for il, line in enumerate(f):
             # if line[0] != '#' or line[0] != ' ':
             if "=" in line:
