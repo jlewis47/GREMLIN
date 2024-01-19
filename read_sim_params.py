@@ -4,20 +4,14 @@ import numpy as np
 
 
 class ramses_sim:
-    class param_list(dict):
-        # pass
+    class param_list:
+        pass
 
         def print_dict(self):
             for key, value in self.__dict__.items():
                 print(key, value)
 
-        def __getattr__(self, item):
-            return super().__getitem__(item)
-
-        def __setattr__(self, item, value):
-            return super().__setitem__(item, value)
-
-    def __init__(self, path, nml=None):
+    def __init__(self, path, SIXDIGITS=False):
         self.path = path
 
         self.namelist = self.param_list()
@@ -25,14 +19,14 @@ class ramses_sim:
         for key, value in nml_params.items():
             setattr(self.namelist, key, value)
 
-        snaps, snap_numbers = get_snaps(path)
+        snaps, snap_numbers = get_snaps(path, SIXDIGITS=SIXDIGITS)
         self.snaps = snaps
         self.snap_numbers = snap_numbers
 
         first_snap = snap_numbers[0]
-        first_info_params = get_info_params(path, first_snap)
+        first_info_params = get_info_params(path, first_snap, SIXDIGITS=SIXDIGITS)
 
-        last_info_params = get_info_params(path, snap_numbers[-1])
+        last_info_params = get_info_params(path, snap_numbers[-1], SIXDIGITS=SIXDIGITS)
 
         self.aexp_stt = np.float64(first_info_params["aexp"])
         self.aexp_end = np.float64(last_info_params["aexp"])
@@ -79,9 +73,21 @@ class ramses_sim:
         return aexps
 
 
-def get_snaps(path):
+def get_snaps(path, SIXDIGITS=False):
     snaps = np.sort([x for x in os.listdir(os.path.join(path)) if "output_" in x])
     snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
+
+    info_present = np.zeros(len(snap_numbers), dtype=bool)
+
+    for isnap, snap_nb in enumerate(snap_numbers):
+        try:
+            get_info_params(path, snap_nb, SIXDIGITS=SIXDIGITS)
+            info_present[isnap] = True
+        except:
+            FileNotFoundError
+
+    snaps = snaps[info_present]
+    snap_numbers = snap_numbers[info_present]
 
     arg = np.argsort(snap_numbers)
 
@@ -134,34 +140,34 @@ def read_info_file(fname):
 
             if il == 17:
                 break
-    return infos
-
-
-def get_info_params(path, snap):
-    snap_str = f"{snap:05d}"
-
-    fname = os.path.join(path, f"output_{snap_str}", f"info_{snap_str}.txt")
-    infos = read_info_file(fname)
 
     return infos
 
 
-def read_hydro_file(path, snap):
-    fname = os.path.join(path, f"output_{snap:05d}", "hydro_file_descriptor.txt")
-    if not os.path.exists(fname):
-        return None
+def read_hydro_file(path, snap, SIXDIGITS=False):
+    if not SIXDIGITS:
+        fname = os.path.join(path, f"output_{snap:05d}", "hydro_file_descriptor.txt")
+    else:
+        fname = os.path.join(path, f"output_{snap:06d}", "hydro_file_descriptor.txt")
     with open(fname, "r") as src:
         hydro = {}
 
         for line in src:
-            if "=" in line:
+            # print(line)
+            if line[0] == "#":
+                continue
+            elif "=" in line:
                 key, value = line.split("=")
                 key = key.strip()
                 value = value.strip()
 
                 hydro[key] = int(value)
-            else:
+            elif ":" in line:
                 key, value = line.split(":")
+                key = key.strip()
+                value = value.strip()
+            elif "," in line:
+                key, value, dtype = line.split(",")
                 key = key.strip()
                 value = value.strip()
 
