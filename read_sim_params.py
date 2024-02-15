@@ -60,16 +60,22 @@ class ramses_sim:
                 setattr(self.hydro, key, value)
 
     def get_snap_exps(self, snap_nbs=None):
+        save = False
+
         if not "aexps" in os.listdir(self.path):
             if snap_nbs is None:
                 snap_nbs = self.snap_numbers
+                save = True
+            elif type(snap_nbs) == int:
+                snap_nbs = [snap_nbs]
 
             aexps = np.zeros(len(snap_nbs), dtype="f4")
 
             for isnap, snap_nb in enumerate(snap_nbs):
                 aexps[isnap] = get_info_params(self.path, snap_nb)["aexp"]
 
-            np.save(os.path.join(self.path, "aexps"), aexps)
+            if save:
+                np.save(os.path.join(self.path, "aexps"), aexps)
 
         else:
             aexps = np.load(os.path.join(self.path, "aexps"))
@@ -202,6 +208,7 @@ def read_hydro_file(path, snap, SIXDIGITS=False):
                 key, value = line.split(":")
                 key = key.strip()
                 value = value.strip()
+                hydro[key] = value
             elif "," in line:
                 key, value, dtype = line.split(",")
                 key = key.strip()
