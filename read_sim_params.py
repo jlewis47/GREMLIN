@@ -1,6 +1,7 @@
 import f90nml
 import os
 import numpy as np
+from astropy.cosmology import FlatLambdaCDM
 
 
 class ramses_sim:
@@ -17,8 +18,13 @@ class ramses_sim:
         def __setattr__(self, item, value):
             return super().__setitem__(item, value)
 
-    def __init__(self, path, nml=None):
+    def __init__(self, path, nml=None, output_path=None):
         self.path = path
+        self.rel_output_path = output_path
+        if output_path is None:
+            self.output_path = self.path
+        else:
+            self.output_path = os.path.join(self.path, self.rel_output_path)
 
         self.namelist = self.param_list()
         nml_params = get_nml_params(path, name=nml)
@@ -30,9 +36,10 @@ class ramses_sim:
         self.snap_numbers = snap_numbers
 
         first_snap = snap_numbers[0]
+        last_snap = snap_numbers[-1]
         first_info_params = get_info_params(path, first_snap)
 
-        last_info_params = get_info_params(path, snap_numbers[-1])
+        last_info_params = get_info_params(path, last_snap)
 
         self.aexp_stt = np.float64(first_info_params["aexp"])
         self.aexp_end = np.float64(last_info_params["aexp"])
@@ -53,13 +60,24 @@ class ramses_sim:
         self.cosmo.unit_l = np.float64(first_info_params["unit_l"])
         self.cosmo.unit_t = np.float64(first_info_params["unit_t"])
 
-        hydroparams = read_hydro_file(path, first_snap)
-        if hydroparams != None:
-            self.hydro = self.param_list()
-            for key, value in hydroparams.items():
-                setattr(self.hydro, key, value)
+        try:
+            hydroparams = read_hydro_file(path, last_snap)
+            if hydroparams != None:
+                self.hydro = self.param_list()
+                for key, value in hydroparams.items():
+                    setattr(self.hydro, key, value)
+        except FileNotFoundError:
+            print("No hydro file found")
 
-    def get_snap_exps(self, snap_nbs=None):
+    def init_cosmo(self):
+        self.cosmo_model = FlatLambdaCDM(
+            H0=self.cosmo.H0,
+            Om0=self.cosmo.Omega_m,
+            Ob0=self.cosmo.Omega_b,
+            Tcmb0=2.725,
+        )
+
+    def get_snap_exps(self, snap_nbs=None, param_save=True):
         save = False
 
         if not "aexps" in os.listdir(self.path):
@@ -72,9 +90,9 @@ class ramses_sim:
             aexps = np.zeros(len(snap_nbs), dtype="f4")
 
             for isnap, snap_nb in enumerate(snap_nbs):
-                aexps[isnap] = get_info_params(self.path, snap_nb)["aexp"]
+                aexps[isnap] = get_info_params(self.output_path, snap_nb)["aexp"]
 
-            if save:
+            if param_save and save:
                 np.save(os.path.join(self.path, "aexps"), aexps)
 
         else:
@@ -84,9 +102,40 @@ class ramses_sim:
 
         return aexps
 
+    def get_snap_times(self, snap_nbs=None, param_save=True):
+
+        save = False
+
+        if not hasattr(self, "cosmo_model"):
+            self.init_cosmo()
+
+        if snap_nbs is None:
+            snap_nbs = self.snap_numbers
+            save = True
+        elif type(snap_nbs) == int:
+            snap_nbs = [snap_nbs]
+
+        if not hasattr(self, "aexps"):
+            self.get_snap_exps(snap_nbs=snap_nbs, param_save=param_save)
+
+        if not "times" in os.listdir(self.path):
+
+            times = self.cosmo_model.age(1.0 / self.aexps - 1.0).value * 1e3  # Myr
+
+            if param_save and save:
+                np.save(os.path.join(self.path, "times"), times)
+
+        else:
+
+            times = np.load(os.path.join(self.path, "times"))
+
+        self.times = times
+
+        return times
+
 
 def get_snaps(path, SIXDIGITS=False):
-    snaps = np.sort([x for x in os.listdir(os.path.join(path)) if "output_" in x])
+    snaps = np.sort([x for x in os.listdir(path) if "output_" in x])
     snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
 
     info_present = np.zeros(len(snap_numbers), dtype=bool)
