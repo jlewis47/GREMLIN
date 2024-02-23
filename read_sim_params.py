@@ -18,28 +18,41 @@ class ramses_sim:
         def __setattr__(self, item, value):
             return super().__setitem__(item, value)
 
-    def __init__(self, path, nml=None, output_path=None):
+    def __init__(self, path, nml=None, output_path=None, info_path=None):
         self.path = path
         self.rel_output_path = output_path
+        self.rel_info_path = info_path
+
         if output_path is None:
             self.output_path = self.path
         else:
             self.output_path = os.path.join(self.path, self.rel_output_path)
+
+        if info_path is None:
+            self.info_outputs = True
+            self.info_path = self.path
+        else:
+            self.info_outputs = False
+            self.info_path = os.path.join(self.path, info_path)
 
         self.namelist = self.param_list()
         nml_params = get_nml_params(path, name=nml)
         for key, value in nml_params.items():
             setattr(self.namelist, key, value)
 
-        snaps, snap_numbers = get_snaps(path)
+        snaps, snap_numbers = self.get_snaps(path)
         self.snaps = snaps
         self.snap_numbers = snap_numbers
 
         first_snap = snap_numbers[0]
         last_snap = snap_numbers[-1]
-        first_info_params = get_info_params(path, first_snap)
+        first_info_params = get_info_params(
+            self.info_path, first_snap, outputs=self.info_outputs
+        )
 
-        last_info_params = get_info_params(path, last_snap)
+        last_info_params = get_info_params(
+            self.info_path, last_snap, outputs=self.info_outputs
+        )
 
         self.aexp_stt = np.float64(first_info_params["aexp"])
         self.aexp_end = np.float64(last_info_params["aexp"])
@@ -90,7 +103,9 @@ class ramses_sim:
             aexps = np.zeros(len(snap_nbs), dtype="f4")
 
             for isnap, snap_nb in enumerate(snap_nbs):
-                aexps[isnap] = get_info_params(self.output_path, snap_nb)["aexp"]
+                aexps[isnap] = get_info_params(
+                    self.info_path, snap_nb, outputs=self.info_outputs
+                )["aexp"]
 
             if param_save and save:
                 np.save(os.path.join(self.path, "aexps"), aexps)
@@ -133,26 +148,30 @@ class ramses_sim:
 
         return times
 
+    def get_snaps(self, path, SIXDIGITS=False):
+        snaps = np.sort([x for x in os.listdir(path) if "output_" in x])
+        snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
 
-def get_snaps(path, SIXDIGITS=False):
-    snaps = np.sort([x for x in os.listdir(path) if "output_" in x])
-    snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
+        info_present = np.zeros(len(snap_numbers), dtype=bool)
 
-    info_present = np.zeros(len(snap_numbers), dtype=bool)
+        for isnap, snap_nb in enumerate(snap_numbers):
+            try:
+                get_info_params(
+                    self.info_path,
+                    snap_nb,
+                    SIXDIGITS=SIXDIGITS,
+                    outputs=self.info_outputs,
+                )
+                info_present[isnap] = True
+            except:
+                FileNotFoundError
 
-    for isnap, snap_nb in enumerate(snap_numbers):
-        try:
-            get_info_params(path, snap_nb, SIXDIGITS=SIXDIGITS)
-            info_present[isnap] = True
-        except:
-            FileNotFoundError
+        snaps = snaps[info_present]
+        snap_numbers = snap_numbers[info_present]
 
-    snaps = snaps[info_present]
-    snap_numbers = snap_numbers[info_present]
+        arg = np.argsort(snap_numbers)
 
-    arg = np.argsort(snap_numbers)
-
-    return (snaps[arg], snap_numbers[arg])
+        return (snaps[arg], snap_numbers[arg])
 
 
 def get_nml_params(path, name=None):
@@ -204,7 +223,7 @@ def read_info_file(fname):
     return infos
 
 
-def get_info_params(path, snap, SIXDIGITS=False):
+def get_info_params(path, snap, SIXDIGITS=False, outputs=True):
     if not SIXDIGITS:
         snap_str = f"{snap:05d}"
     else:
@@ -212,9 +231,12 @@ def get_info_params(path, snap, SIXDIGITS=False):
 
     infos = {}
 
-    with open(
-        os.path.join(path, f"output_{snap_str}", f"info_{snap_str}.txt"), "r"
-    ) as f:
+    if outputs:
+        info_fpath = os.path.join(path, f"output_{snap_str}", f"info_{snap_str}.txt")
+    else:
+        info_fpath = os.path.join(path, f"info_{snap_str}.txt")
+
+    with open(info_fpath, "r") as f:
         for il, line in enumerate(f):
             # if line[0] != '#' or line[0] != ' ':
             if "=" in line:
