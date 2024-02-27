@@ -82,7 +82,7 @@ class ramses_sim:
                 for key, value in hydroparams.items():
                     setattr(self.hydro, key, value)
         except FileNotFoundError:
-            print("No hydro file found")
+            print("ramses_sim: No hydro_descr file found in outputs")
 
     def init_cosmo(self):
         self.cosmo_model = FlatLambdaCDM(
