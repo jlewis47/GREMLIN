@@ -40,9 +40,11 @@ class ramses_sim:
         for key, value in nml_params.items():
             setattr(self.namelist, key, value)
 
-        snaps, snap_numbers = self.get_snaps(path)
+        snaps, snap_numbers = self.get_snaps()
         self.snaps = snaps
         self.snap_numbers = snap_numbers
+
+        # print(self.output_path, self.info_path, self.snaps, self.snap_numbers)
 
         first_snap = snap_numbers[0]
         last_snap = snap_numbers[-1]
@@ -148,8 +150,8 @@ class ramses_sim:
 
         return times
 
-    def get_snaps(self, path, SIXDIGITS=False):
-        snaps = np.sort([x for x in os.listdir(path) if "output_" in x])
+    def get_snaps(self, SIXDIGITS=False):
+        snaps = np.sort([x for x in os.listdir(self.output_path) if "output_" in x])
         snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
 
         info_present = np.zeros(len(snap_numbers), dtype=bool)
