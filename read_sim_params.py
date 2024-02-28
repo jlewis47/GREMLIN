@@ -18,8 +18,11 @@ class ramses_sim:
         def __setattr__(self, item, value):
             return super().__setitem__(item, value)
 
-    def __init__(self, path, nml=None, output_path=None, info_path=None):
+    def __init__(
+        self, path, nml=None, output_path=None, info_path=None, sink_path=None
+    ):
         self.path = path
+
         self.rel_output_path = output_path
         self.rel_info_path = info_path
 
@@ -34,6 +37,11 @@ class ramses_sim:
         else:
             self.info_outputs = False
             self.info_path = os.path.join(self.path, info_path)
+
+        if sink_path is None:
+            self.sink_path = os.path.join(self.path, "SINKPROPS")
+        else:
+            self.sink_path = sink_path
 
         self.namelist = self.param_list()
         nml_params = get_nml_params(path, name=nml)
@@ -99,7 +107,7 @@ class ramses_sim:
             if snap_nbs is None:
                 snap_nbs = self.snap_numbers
                 save = True
-            elif type(snap_nbs) == int:
+            elif type(snap_nbs) in [int, np.int32, np.int64, "i4", "i8"]:
                 snap_nbs = [snap_nbs]
 
             aexps = np.zeros(len(snap_nbs), dtype="f4")
