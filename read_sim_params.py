@@ -3,6 +3,10 @@ import os
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 
+ramses_pc = 3.08e18  # cm
+mass_H_cgs = 1.66e-24  # g
+Bmann_cgs = 1.38062e-16  # erg/K
+
 
 class ramses_sim:
     class param_list(dict):
@@ -22,6 +26,8 @@ class ramses_sim:
         self, path, nml=None, output_path=None, info_path=None, sink_path=None
     ):
         self.path = path
+
+        self.name = path.split("/")[-1]
 
         self.rel_output_path = output_path
         self.rel_info_path = info_path
@@ -48,6 +54,26 @@ class ramses_sim:
         for key, value in nml_params.items():
             setattr(self.namelist, key, value)
 
+        if "refine_params" in self.namelist.keys():
+            if "xzoom" in self.namelist["refine_params"].keys():
+                self.zoom_ctr = np.asarray(
+                    [
+                        self.namelist["refine_params"]["xzoom"],
+                        self.namelist["refine_params"]["yzoom"],
+                        self.namelist["refine_params"]["zzoom"],
+                    ]
+                )
+
+        if "feedback_params" in self.namelist.keys():
+            if "stellar_winds_file" in self.namelist["feedback_params"].keys():
+
+                self.yield_tables = os.path.join(
+                    self.path, self.namelist["feedback_params"]["stellar_winds_file"]
+                )
+
+                if not os.path.isfile(self.yield_tables):
+                    print(f"couldn't find yield tables {self.yield_tables:s}")
+
         snaps, snap_numbers = self.get_snaps()
         self.snaps = snaps
         self.snap_numbers = snap_numbers
@@ -56,13 +82,9 @@ class ramses_sim:
 
         first_snap = snap_numbers[0]
         last_snap = snap_numbers[-1]
-        first_info_params = get_info_params(
-            self.info_path, first_snap, outputs=self.info_outputs
-        )
+        first_info_params = self.get_info_params(first_snap, outputs=self.info_outputs)
 
-        last_info_params = get_info_params(
-            self.info_path, last_snap, outputs=self.info_outputs
-        )
+        last_info_params = self.get_info_params(last_snap, outputs=self.info_outputs)
 
         self.aexp_stt = np.float64(first_info_params["aexp"])
         self.aexp_end = np.float64(last_info_params["aexp"])
@@ -79,18 +101,59 @@ class ramses_sim:
         self.cosmo.Omega_l = np.float64(first_info_params["omega_l"])
         self.cosmo.Omega_b = np.float64(first_info_params["omega_b"])
         self.cosmo.Omega_k = np.float64(first_info_params["omega_k"])
-        self.cosmo.unit_d = np.float64(first_info_params["unit_d"])
-        self.cosmo.unit_l = np.float64(first_info_params["unit_l"])
-        self.cosmo.unit_t = np.float64(first_info_params["unit_t"])
+        # self.cosmo.unit_d = np.float64(first_info_params["unit_d"])
+        # self.cosmo.unit_l = np.float64(first_info_params["unit_l"])
+        # self.cosmo.unit_t = np.float64(first_info_params["unit_t"])
+
+        self.cosmo.lcMpc = (
+            self.cosmo.unit_l(self.aexp_stt) / (ramses_pc * 1e6) / self.aexp_stt
+        )
 
         try:
-            hydroparams = read_hydro_file(path, last_snap)
+            hydroparams = read_hydro_file(self.output_path, last_snap)
             if hydroparams != None:
                 self.hydro = self.param_list()
                 for key, value in hydroparams.items():
                     setattr(self.hydro, key, value)
         except FileNotFoundError:
             print("ramses_sim: No hydro_descr file found in outputs")
+
+    def unit_d(self, aexp):
+
+        # rhoc = 1.8800000e-29
+
+        # return self.cosmo.Omega_m * rhoc * (self.cosmo.H0 / 100.0) ** 2 / aexp**3
+        snap = self.get_closest_snap(aexp=aexp)
+        return np.float64(
+            self.get_info_params(snap, outputs=self.info_outputs)["unit_d"]
+        )
+
+    def unit_t(self, aexp):
+
+        # return aexp**2 / (self.cosmo.H0 * 1e5 / (ramses_pc * 1e6))
+        snap = self.get_closest_snap(aexp=aexp)
+        return np.float64(
+            self.get_info_params(snap, outputs=self.info_outputs)["unit_t"]
+        )
+
+    def unit_l(self, aexp):
+
+        # return aexp * self.cosmo.boxlen * (ramses_pc * 1e6) / (self.cosmo.H0 / 100.0)
+        snap = self.get_closest_snap(aexp=aexp)
+        return np.float64(
+            self.get_info_params(snap, outputs=self.info_outputs)["unit_l"]
+        )
+
+    def unit_v(self, aexp):
+
+        return self.unit_l(aexp) / self.unit_t(aexp)
+
+    def unit_T(self, aexp):
+
+        return mass_H_cgs / Bmann_cgs * (self.unit_l(aexp) / self.unit_t(aexp)) ** 2
+
+    def lpMpc(self, aexp):
+        return self.unit_l(aexp) / (ramses_pc * 1e6)
 
     def init_cosmo(self):
         self.cosmo_model = FlatLambdaCDM(
@@ -113,9 +176,9 @@ class ramses_sim:
             aexps = np.zeros(len(snap_nbs), dtype="f4")
 
             for isnap, snap_nb in enumerate(snap_nbs):
-                aexps[isnap] = get_info_params(
-                    self.info_path, snap_nb, outputs=self.info_outputs
-                )["aexp"]
+                aexps[isnap] = self.get_info_params(snap_nb, outputs=self.info_outputs)[
+                    "aexp"
+                ]
 
             if param_save and save:
                 np.save(os.path.join(self.path, "aexps"), aexps)
@@ -126,6 +189,29 @@ class ramses_sim:
         self.aexps = aexps
 
         return aexps
+
+    def get_closest_snap(self, aexp=None, zed=None, time=None, param_save=False):
+
+        assert (
+            aexp != None or zed != None or time != None
+        ), "Need to provide either zed or time"
+
+        if zed is not None or aexp is not None:
+
+            if not hasattr(self, "aexps"):
+                self.get_snap_exps(param_save=param_save)
+
+            if zed is not None and aexp is None:
+                aexp = 1.0 / (1.0 + zed)
+
+            return self.snap_numbers[np.argmin(np.abs(self.aexps - aexp))]
+
+        elif time is not None:
+
+            if not hasattr(self, "times"):
+                self.get_snap_times(param_save=param_save)
+
+            return self.snap_numbers[np.argmin(np.abs(self.times - time))]
 
     def get_snap_times(self, snap_nbs=None, param_save=True):
 
@@ -166,15 +252,14 @@ class ramses_sim:
 
         for isnap, snap_nb in enumerate(snap_numbers):
             try:
-                get_info_params(
-                    self.info_path,
+                self.get_info_params(
                     snap_nb,
                     SIXDIGITS=SIXDIGITS,
                     outputs=self.info_outputs,
                 )
                 info_present[isnap] = True
-            except:
-                FileNotFoundError
+            except FileNotFoundError:
+                pass
 
         snaps = snaps[info_present]
         snap_numbers = snap_numbers[info_present]
@@ -182,6 +267,41 @@ class ramses_sim:
         arg = np.argsort(snap_numbers)
 
         return (snaps[arg], snap_numbers[arg])
+
+    def get_info_params(self, snap, SIXDIGITS=False, outputs=True):
+        if not SIXDIGITS:
+            snap_str = f"{snap:05d}"
+        else:
+            snap_str = f"{snap:06d}"
+
+        infos = {}
+
+        if outputs:
+            info_fpath = os.path.join(
+                self.output_path, f"output_{snap_str}", f"info_{snap_str}.txt"
+            )
+        else:
+            info_fpath = os.path.join(self.info_path, f"info_{snap_str}.txt")
+
+        with open(info_fpath, "r") as f:
+            for il, line in enumerate(f):
+                # if line[0] != '#' or line[0] != ' ':
+                if "=" in line:
+                    # print('|',line,'|')
+                    key, value = line.split("=")
+                    key = key.strip()
+                    value = value.strip()
+                    if not "." in value:
+                        infos[key] = int(value)
+                    else:
+                        infos[key] = float(value)
+
+                    infos[key] = value
+
+                if il == 17:
+                    break
+
+        return infos
 
 
 def get_nml_params(path, name=None):
@@ -230,40 +350,6 @@ def read_info_file(fname):
 
             if il == 17:
                 break
-    return infos
-
-
-def get_info_params(path, snap, SIXDIGITS=False, outputs=True):
-    if not SIXDIGITS:
-        snap_str = f"{snap:05d}"
-    else:
-        snap_str = f"{snap:06d}"
-
-    infos = {}
-
-    if outputs:
-        info_fpath = os.path.join(path, f"output_{snap_str}", f"info_{snap_str}.txt")
-    else:
-        info_fpath = os.path.join(path, f"info_{snap_str}.txt")
-
-    with open(info_fpath, "r") as f:
-        for il, line in enumerate(f):
-            # if line[0] != '#' or line[0] != ' ':
-            if "=" in line:
-                # print('|',line,'|')
-                key, value = line.split("=")
-                key = key.strip()
-                value = value.strip()
-                if not "." in value:
-                    infos[key] = int(value)
-                else:
-                    infos[key] = float(value)
-
-                infos[key] = value
-
-            if il == 17:
-                break
-
     return infos
 
 
