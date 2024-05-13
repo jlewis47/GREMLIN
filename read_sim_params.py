@@ -23,7 +23,13 @@ class ramses_sim:
             return super().__setitem__(item, value)
 
     def __init__(
-        self, path, nml=None, output_path=None, info_path=None, sink_path=None
+        self,
+        path,
+        nml=None,
+        output_path=None,
+        info_path=None,
+        sink_path=None,
+        param_save=True,
     ):
         self.path = path
 
@@ -105,8 +111,10 @@ class ramses_sim:
         # self.cosmo.unit_l = np.float64(first_info_params["unit_l"])
         # self.cosmo.unit_t = np.float64(first_info_params["unit_t"])
 
+        self.get_snap_exps(param_save=param_save)
+
         self.cosmo.lcMpc = (
-            self.cosmo.unit_l(self.aexp_stt) / (ramses_pc * 1e6) / self.aexp_stt
+            self.unit_l(self.aexp_stt) / (ramses_pc * 1e6) / self.aexp_stt
         )
 
         try:
@@ -172,6 +180,7 @@ class ramses_sim:
                 save = True
             elif type(snap_nbs) in [int, np.int32, np.int64, "i4", "i8"]:
                 snap_nbs = [snap_nbs]
+                save = False
 
             aexps = np.zeros(len(snap_nbs), dtype="f4")
 
@@ -180,13 +189,14 @@ class ramses_sim:
                     "aexp"
                 ]
 
-            if param_save and save:
-                np.save(os.path.join(self.path, "aexps"), aexps)
+            if save:
+                self.aexps = aexps
+                if param_save:
+                    np.save(os.path.join(self.path, "aexps"), aexps)
 
         else:
             aexps = np.load(os.path.join(self.path, "aexps"))
-
-        self.aexps = aexps
+            self.aexps = aexps
 
         return aexps
 
@@ -194,7 +204,7 @@ class ramses_sim:
 
         assert (
             aexp != None or zed != None or time != None
-        ), "Need to provide either zed or time"
+        ), "Need to provide either aexp, zed, or time"
 
         if zed is not None or aexp is not None:
 
@@ -233,24 +243,34 @@ class ramses_sim:
 
             times = self.cosmo_model.age(1.0 / self.aexps - 1.0).value * 1e3  # Myr
 
-            if param_save and save:
-                np.save(os.path.join(self.path, "times"), times)
+            if save:
+                self.times = times
+                if param_save:
+                    np.save(os.path.join(self.path, "times"), times)
 
         else:
 
             times = np.load(os.path.join(self.path, "times"))
-
-        self.times = times
+            self.times = times
 
         return times
 
-    def get_snaps(self, SIXDIGITS=False):
-        snaps = np.sort([x for x in os.listdir(self.output_path) if "output_" in x])
+    def get_snaps(self, SIXDIGITS=False, full_snaps=True):
+
+        out_files = os.listdir(self.output_path)
+
+        snaps = np.sort([x for x in out_files if "output_" in x])
         snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
 
         info_present = np.zeros(len(snap_numbers), dtype=bool)
+        hydro_present = np.zeros(len(snap_numbers), dtype=bool)
+        part_present = np.zeros(len(snap_numbers), dtype=bool)
 
         for isnap, snap_nb in enumerate(snap_numbers):
+            if np.any("part" in x for x in out_files):
+                part_present[isnap] = True
+            if np.any("hydro" in x for x in out_files):
+                hydro_present[isnap] = True
             try:
                 self.get_info_params(
                     snap_nb,
@@ -261,8 +281,15 @@ class ramses_sim:
             except FileNotFoundError:
                 pass
 
-        snaps = snaps[info_present]
-        snap_numbers = snap_numbers[info_present]
+        if not full_snaps:
+
+            snaps = snaps[info_present]
+            snap_numbers = snap_numbers[info_present]
+
+        else:
+
+            snaps = snaps[info_present * hydro_present * part_present]
+            snap_numbers = snap_numbers[info_present * hydro_present * part_present]
 
         arg = np.argsort(snap_numbers)
 
