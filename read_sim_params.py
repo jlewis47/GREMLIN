@@ -258,7 +258,6 @@ class ramses_sim:
     def get_snaps(self, SIXDIGITS=False, full_snaps=True):
 
         out_files = os.listdir(self.output_path)
-
         snaps = np.sort([x for x in out_files if "output_" in x])
         snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
 
@@ -267,10 +266,13 @@ class ramses_sim:
         part_present = np.zeros(len(snap_numbers), dtype=bool)
 
         for isnap, snap_nb in enumerate(snap_numbers):
-            if np.any("part" in x for x in out_files):
-                part_present[isnap] = True
-            if np.any("hydro" in x for x in out_files):
-                hydro_present[isnap] = True
+
+            if full_snaps:
+                snap_files = os.listdir(os.path.join(self.output_path, snaps[isnap]))
+                if np.any([f"part_{snap_nb:05d}.out" in x for x in snap_files]):
+                    part_present[isnap] = True
+                if np.any([f"hydro_{snap_nb:05d}.out" in x for x in snap_files]):
+                    hydro_present[isnap] = True
             try:
                 self.get_info_params(
                     snap_nb,
@@ -290,6 +292,10 @@ class ramses_sim:
 
             snaps = snaps[info_present * hydro_present * part_present]
             snap_numbers = snap_numbers[info_present * hydro_present * part_present]
+
+        # print(part_present, hydro_present, info_present)
+
+        print(f"Found {len(snap_numbers)} snapshots in {self.output_path:s}")
 
         arg = np.argsort(snap_numbers)
 
