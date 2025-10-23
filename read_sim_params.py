@@ -30,10 +30,15 @@ class ramses_sim:
         info_path=None,
         sink_path=None,
         param_save=True,
+        verbose=False,
+        full_check=True,
     ):
+        if path.endswith("/"):  # handle possible trailing "/" so name is correct
+            path = path[:-1]
         self.path = path
-
         self.name = path.split("/")[-1]
+
+        self.verbose = verbose
 
         self.rel_output_path = output_path
         self.rel_info_path = info_path
@@ -80,51 +85,76 @@ class ramses_sim:
                 if not os.path.isfile(self.yield_tables):
                     print(f"couldn't find yield tables {self.yield_tables:s}")
 
-        snaps, snap_numbers = self.get_snaps()
+        snaps, snap_numbers = self.get_snaps(full_check=full_check)
         self.snaps = snaps
         self.snap_numbers = snap_numbers
 
         # print(self.output_path, self.info_path, self.snaps, self.snap_numbers)
 
-        first_snap = snap_numbers[0]
-        last_snap = snap_numbers[-1]
-        first_info_params = self.get_info_params(first_snap, outputs=self.info_outputs)
+        # print(snap_numbers)
+        if len(snap_numbers) > 0:
 
-        last_info_params = self.get_info_params(last_snap, outputs=self.info_outputs)
+            first_snap = snap_numbers[0]
+            last_snap = snap_numbers[-1]
+            first_info_params = self.get_info_params(
+                first_snap, outputs=self.info_outputs
+            )
 
-        self.aexp_stt = np.float64(first_info_params["aexp"])
-        self.aexp_end = np.float64(last_info_params["aexp"])
+            last_info_params = self.get_info_params(
+                last_snap, outputs=self.info_outputs
+            )
 
-        self.ncpu = int(first_info_params["ncpu"])
-        self.ndim = int(first_info_params["ndim"])
-        self.levelmin = int(first_info_params["levelmin"])
-        self.levelmax = int(first_info_params["levelmax"])
+            self.aexp_stt = np.float64(first_info_params["aexp"])
+            self.aexp_end = np.float64(last_info_params["aexp"])
 
-        self.cosmo = self.param_list()
-        self.cosmo.boxlen = np.float64(first_info_params["boxlen"])
-        self.cosmo.H0 = np.float64(first_info_params["H0"])
-        self.cosmo.Omega_m = np.float64(first_info_params["omega_m"])
-        self.cosmo.Omega_l = np.float64(first_info_params["omega_l"])
-        self.cosmo.Omega_b = np.float64(first_info_params["omega_b"])
-        self.cosmo.Omega_k = np.float64(first_info_params["omega_k"])
-        # self.cosmo.unit_d = np.float64(first_info_params["unit_d"])
-        # self.cosmo.unit_l = np.float64(first_info_params["unit_l"])
-        # self.cosmo.unit_t = np.float64(first_info_params["unit_t"])
+            self.ncpu = int(first_info_params["ncpu"])
+            self.ndim = int(first_info_params["ndim"])
+            self.levelmin = int(first_info_params["levelmin"])
+            self.levelmax = int(first_info_params["levelmax"])
 
-        self.get_snap_exps(param_save=param_save)
+            self.cosmo = self.param_list()
+            self.cosmo.boxlen = np.float64(first_info_params["boxlen"])
+            self.cosmo.H0 = np.float64(first_info_params["H0"])
+            self.cosmo.H0_SI = self.cosmo.H0 * (1e3) / (1e6 * 3.08e16)
+            self.cosmo.Omega_m = np.float64(first_info_params["omega_m"])
+            self.cosmo.Omega_l = np.float64(first_info_params["omega_l"])
+            self.cosmo.Omega_b = np.float64(first_info_params["omega_b"])
+            self.cosmo.Omega_k = np.float64(first_info_params["omega_k"])
+            # self.cosmo.unit_d = np.float64(first_info_params["unit_d"])
+            # self.cosmo.unit_l = np.float64(first_info_params["unit_l"])
+            # self.cosmo.unit_t = np.float64(first_info_params["unit_t"])
 
-        self.cosmo.lcMpc = (
-            self.unit_l(self.aexp_stt) / (ramses_pc * 1e6) / self.aexp_stt
-        )
+            self.get_snap_exps(param_save=param_save)
 
-        try:
-            hydroparams = read_hydro_file(self.output_path, last_snap)
-            if hydroparams != None:
-                self.hydro = self.param_list()
-                for key, value in hydroparams.items():
-                    setattr(self.hydro, key, value)
-        except FileNotFoundError:
-            print("ramses_sim: No hydro_descr file found in outputs")
+            self.cosmo.lcMpc = (
+                self.unit_l(self.aexp_stt) / (ramses_pc * 1e6) / self.aexp_stt
+            )
+
+            found_hydro = False
+            snap_cnt = 0
+            while not found_hydro and snap_cnt < len(snap_numbers):
+                try:
+                    hydroparams = read_hydro_file(
+                        self.output_path, self.snap_numbers[snap_cnt]
+                    )
+                    if hydroparams != None:
+                        self.hydro = self.param_list()
+                        for key, value in hydroparams.items():
+                            if "variable #" in key:
+                                key = key.split(" ")[-1]
+                            setattr(self.hydro, key, value)
+                except FileNotFoundError:
+
+                    snap_cnt += 1
+                    pass
+
+                found_hydro = True
+
+            if not found_hydro and verbose:
+                print("ramses_sim: No hydro_descr file found in outputs")
+        else:
+
+            print("didn't find any snaps in the simulation directory")
 
     def unit_d(self, aexp):
 
@@ -151,6 +181,14 @@ class ramses_sim:
         return np.float64(
             self.get_info_params(snap, outputs=self.info_outputs)["unit_l"]
         )
+
+    def unit_m(self, aexp):
+
+        # return aexp * self.cosmo.boxlen * (ramses_pc * 1e6) / (self.cosmo.H0 / 100.0)
+        snap = self.get_closest_snap(aexp=aexp)
+        d = self.unit_d(aexp)
+        l3 = self.unit_l(aexp) ** 3
+        return d * l3 / 2e33  # code to msun
 
     def unit_v(self, aexp):
 
@@ -235,44 +273,147 @@ class ramses_sim:
             save = True
         elif type(snap_nbs) == int:
             snap_nbs = [snap_nbs]
+        elif type(snap_nbs) == np.ndarray or type(snap_nbs) == list:
+            pass
 
         if not hasattr(self, "aexps"):
-            self.get_snap_exps(snap_nbs=snap_nbs, param_save=param_save)
+            self.get_snap_exps(param_save=True)
+
+        aexps = self.get_snap_exps(snap_nbs)
 
         if not "times" in os.listdir(self.path):
 
-            times = self.cosmo_model.age(1.0 / self.aexps - 1.0).value * 1e3  # Myr
+            times = self.cosmo_model.age(1.0 / aexps - 1.0).value * 1e3  # Myr
 
             if save:
-                self.times = times
+
                 if param_save:
                     np.save(os.path.join(self.path, "times"), times)
 
         else:
 
             times = np.load(os.path.join(self.path, "times"))
-            self.times = times
+
+        self.times = times
 
         return times
 
-    def get_snaps(self, SIXDIGITS=False, full_snaps=True):
+    def get_snaps(
+        self,
+        SIXDIGITS=False,
+        full_snaps=True,
+        mini_snaps=True,
+        tar_snaps=True,
+        full_check=True,
+    ):
+        # if full_snaps, look for snaps with hydro and part files etc
+        # if mini_snaps, also look for halogal_data files
+        # if neither, as long as there is an info file, it's a snap
 
         out_files = os.listdir(self.output_path)
-        snaps = np.sort([x for x in out_files if "output_" in x])
+
+        if type(out_files[0]) == type(b"a"):  # omg what is wrong...
+            # sometimes all my os.listdir results are byte strings...
+            out_files = [x.decode("utf-8") for x in out_files]
+
+        snaps = np.sort(
+            [
+                x
+                for x in out_files
+                if x.startswith("output_") and "." not in x and "backup" not in x
+            ]
+        )
         snap_numbers = np.array([int(x.split("_")[-1]) for x in snaps])
 
         info_present = np.zeros(len(snap_numbers), dtype=bool)
-        hydro_present = np.zeros(len(snap_numbers), dtype=bool)
-        part_present = np.zeros(len(snap_numbers), dtype=bool)
+        # hydro_present = np.zeros(len(snap_numbers), dtype=bool)
+        # part_present = np.zeros(len(snap_numbers), dtype=bool)
+        ok_files = np.zeros(len(snap_numbers), dtype=bool)
+        is_mini_snap = np.zeros(len(snap_numbers), dtype=bool)
+        tar_present = np.zeros(len(snap_numbers), dtype=bool)
+
+        mini_dir_exists = os.path.isdir(os.path.join(self.output_path, "halogal_data"))
+
+        # print(mini_dir_exists)
 
         for isnap, snap_nb in enumerate(snap_numbers):
 
             if full_snaps:
-                snap_files = os.listdir(os.path.join(self.output_path, snaps[isnap]))
-                if np.any([f"part_{snap_nb:05d}.out" in x for x in snap_files]):
-                    part_present[isnap] = True
-                if np.any([f"hydro_{snap_nb:05d}.out" in x for x in snap_files]):
-                    hydro_present[isnap] = True
+
+                if full_check:
+
+                    present = True
+                    part_count = 1
+                    hydro_count = 1
+
+                    while present:
+
+                        present_part = os.path.isfile(
+                            os.path.join(
+                                self.output_path,
+                                snaps[isnap],
+                                f"part_{snap_nb:05d}.out{part_count:05d}",
+                            )
+                        )
+
+                        part_count += int(present_part)
+
+                        present_hydro = os.path.isfile(
+                            os.path.join(
+                                self.output_path,
+                                snaps[isnap],
+                                f"hydro_{snap_nb:05d}.out{hydro_count:05d}",
+                            )
+                        )
+
+                        hydro_count += int(present_hydro)
+
+                        present = present_hydro * present_part
+
+                    ok_files[isnap] = (
+                        (hydro_count > 1)
+                        * (part_count > 1)
+                        * (hydro_count == part_count)
+                    )
+
+                else:
+
+                    present_part = os.path.isfile(
+                        os.path.join(
+                            self.output_path,
+                            snaps[isnap],
+                            f"part_{snap_nb:05d}.out{1:05d}",
+                        )
+                    )
+                    present_hydro = os.path.isfile(
+                        os.path.join(
+                            self.output_path,
+                            snaps[isnap],
+                            f"hydro_{snap_nb:05d}.out{1:05d}",
+                        )
+                    )
+
+                    ok_files[isnap] = present_part * present_hydro
+
+                if os.path.isfile(
+                    os.path.join(self.output_path, f"output_{snap_nb:05d}.tar")
+                ):
+                    tar_present[isnap] = True
+                # snap_files = os.listdir(os.path.join(self.output_path, snaps[isnap])) #this is slow
+                # if np.any([f"part_{snap_nb:05d}.out" in x for x in snap_files]):
+                #     part_present[isnap] = True
+                # if np.any([f"hydro_{snap_nb:05d}.out" in x for x in snap_files]):
+                #     hydro_present[isnap] = True
+            if mini_snaps:
+                if mini_dir_exists:
+                    fpath_mini = os.path.join(
+                        self.path, "halogal_data", f"halo_data_{snap_nb:d}.h5"
+                    )
+                    # print(fpath_mini)
+                    if os.path.isfile(fpath_mini):
+                        # print("found mini snap")
+                        is_mini_snap[isnap] = True
+
             try:
                 self.get_info_params(
                     snap_nb,
@@ -283,19 +424,32 @@ class ramses_sim:
             except FileNotFoundError:
                 pass
 
-        if not full_snaps:
+        pick_targets = info_present
+        if full_snaps:
+            pick_targets = pick_targets * ok_files  # * hydro_present * part_present
+        if mini_snaps:
+            pick_targets = (
+                pick_targets + is_mini_snap * info_present
+            )  # don't require mini or full snaps, but count both
+        if tar_snaps:
+            pick_targets = (
+                pick_targets + tar_present * info_present
+            )  # don't require mini or full snaps, but count both
 
-            snaps = snaps[info_present]
-            snap_numbers = snap_numbers[info_present]
+        if self.verbose:
+            print(f"Found {np.sum(pick_targets)} snapshots in {self.output_path:s}")
+            print(f"Found", np.sum(info_present), "info files")
+            print(f"Found", hydro_count, " hydro files")
+            print(f"Found", part_count, "part files")
+            print(f"Found", np.sum(tar_present), "tar snaps")
+            print(f"Found", np.sum(ok_files), "full snaps")
+            print(f"Found", np.sum(is_mini_snap), "mini snaps")
 
-        else:
+        snaps = snaps[pick_targets]
+        snap_numbers = snap_numbers[pick_targets]
 
-            snaps = snaps[info_present * hydro_present * part_present]
-            snap_numbers = snap_numbers[info_present * hydro_present * part_present]
-
-        # print(part_present, hydro_present, info_present)
-
-        print(f"Found {len(snap_numbers)} snapshots in {self.output_path:s}")
+        if self.verbose:
+            print(f"Found {len(snap_numbers)} snapshots in {self.output_path:s}")
 
         arg = np.argsort(snap_numbers)
 
@@ -335,6 +489,73 @@ class ramses_sim:
                     break
 
         return infos
+
+    def compute_aexps_lvlchange(self):
+        # compute aexp at which level changes occur
+        # this is useful for setting up zoom simulations
+        # where you want to change the resolution at a certain aexp
+
+        lvls = np.arange(self.levelmin, self.levelmax + 1)
+        aexps = 0.8 / 2 ** (self.levelmax - lvls)
+        resolutions = np.round(self.cosmo.lcMpc * 1e6 / 2**lvls, decimals=1)
+        zeds = np.round(1.0 / aexps - 1, decimals=2)
+        return (lvls, zeds, resolutions)
+
+    def get_volume(self):
+
+        zoom_ctr = [
+            self.namelist["refine_params"]["xzoom"],
+            self.namelist["refine_params"]["yzoom"],
+            self.namelist["refine_params"]["zzoom"],
+        ]
+
+        if "rzoom" in self.namelist["refine_params"]:
+            check_zoom = (
+                lambda coords: np.linalg.norm(coords - zoom_ctr, axis=1)
+                < self.namelist["refine_params"]["rzoom"]
+            )
+
+            vol_cMpc = (
+                4.0
+                / 3
+                * np.pi
+                * (self.namelist["refine_params"]["rzoom"] * self.cosmo.lcMpc) ** 3
+            )
+
+        elif "azoom" in self.namelist["refine_params"]:
+            if "zoom_shape" in self.namelist["refine_params"]:
+                ellipse = True
+                if self.namelist["refine_params"]["zoom_shape"] == "rectangle":
+                    ellipse = False
+            else:
+                ellipse = True
+
+            a = self.namelist["refine_params"]["azoom"]
+            b = self.namelist["refine_params"]["bzoom"]
+            c = self.namelist["refine_params"]["czoom"]
+
+            if ellipse:
+                check_zoom = (
+                    lambda coords: (
+                        ((coords[:, 0] - zoom_ctr[0]) / a) ** 2
+                        + ((coords[:, 1] - zoom_ctr[1]) / b) ** 2
+                        + ((coords[:, 2] - zoom_ctr[2]) / c) ** 2
+                    )
+                    < 1
+                )
+
+                vol_cMpc = 4 / 3 * np.pi * a * b * c * self.cosmo.lcMpc**3
+
+            else:
+                check_zoom = (
+                    lambda coords: (np.abs(coords[:, 0] - zoom_ctr[0]) < a)
+                    * (np.abs(coords[:, 1] - zoom_ctr[1]) < b)
+                    * (np.abs(coords[:, 2] - zoom_ctr[2]) < c)
+                )
+
+                vol_cMpc = a * b * c * self.cosmo.lcMpc**3
+
+        return vol_cMpc, check_zoom
 
 
 def get_nml_params(path, name=None):
