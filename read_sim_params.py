@@ -31,12 +31,17 @@ class ramses_sim:
         sink_path=None,
         param_save=True,
         verbose=False,
-        full_check=True,
+        full_check=False,
+        full_snaps=True,
+        tar_snaps=True,
+        mini_snaps=True,
     ):
         if path.endswith("/"):  # handle possible trailing "/" so name is correct
             path = path[:-1]
         self.path = path
         self.name = path.split("/")[-1]
+
+        self.param_save = param_save
 
         self.verbose = verbose
 
@@ -50,7 +55,7 @@ class ramses_sim:
 
         if info_path is None:
             self.info_outputs = True
-            self.info_path = self.path
+            self.info_path = self.output_path
         else:
             self.info_outputs = False
             self.info_path = os.path.join(self.path, info_path)
@@ -85,7 +90,12 @@ class ramses_sim:
                 if not os.path.isfile(self.yield_tables):
                     print(f"couldn't find yield tables {self.yield_tables:s}")
 
-        snaps, snap_numbers = self.get_snaps(full_check=full_check)
+        snaps, snap_numbers = self.get_snaps(
+            full_check=full_check,
+            full_snaps=full_snaps,
+            tar_snaps=tar_snaps,
+            mini_snaps=mini_snaps,
+        )
         self.snaps = snaps
         self.snap_numbers = snap_numbers
 
@@ -113,6 +123,7 @@ class ramses_sim:
             self.levelmax = int(first_info_params["levelmax"])
 
             self.cosmo = self.param_list()
+            self.cosmo.cosmo_run = self.namelist['run_params']['cosmo']
             self.cosmo.boxlen = np.float64(first_info_params["boxlen"])
             self.cosmo.H0 = np.float64(first_info_params["H0"])
             self.cosmo.H0_SI = self.cosmo.H0 * (1e3) / (1e6 * 3.08e16)
@@ -124,10 +135,11 @@ class ramses_sim:
             # self.cosmo.unit_l = np.float64(first_info_params["unit_l"])
             # self.cosmo.unit_t = np.float64(first_info_params["unit_t"])
 
-            self.get_snap_exps(param_save=param_save)
+            self.get_snap_exps()
 
+            
             self.cosmo.lcMpc = (
-                self.unit_l(self.aexp_stt) / (ramses_pc * 1e6) / self.aexp_stt
+               self.cosmo.boxlen * self.unit_l(self.aexp_stt) / (ramses_pc * 1e6) / self.aexp_stt
             )
 
             found_hydro = False
@@ -155,6 +167,7 @@ class ramses_sim:
         else:
 
             print("didn't find any snaps in the simulation directory")
+
 
     def unit_d(self, aexp):
 
@@ -209,8 +222,11 @@ class ramses_sim:
             Tcmb0=2.725,
         )
 
-    def get_snap_exps(self, snap_nbs=None, param_save=True):
+    def get_snap_exps(self, snap_nbs=None, param_save=None):
         save = False
+
+        if param_save == None:
+            param_save = self.param_save
 
         if not "aexps" in os.listdir(self.path):
             if snap_nbs is None:
@@ -223,9 +239,13 @@ class ramses_sim:
             aexps = np.zeros(len(snap_nbs), dtype="f4")
 
             for isnap, snap_nb in enumerate(snap_nbs):
-                aexps[isnap] = self.get_info_params(snap_nb, outputs=self.info_outputs)[
-                    "aexp"
-                ]
+                try:
+                    aexps[isnap] = self.get_info_params(snap_nb, outputs=self.info_outputs)[
+                        "aexp"
+                    ]
+                except PermissionError:
+                    if self.verbose:print(f"info file for snapshot {snap_nb} not readable")
+                    aexps[isnap] = np.nan
 
             if save:
                 self.aexps = aexps
@@ -238,7 +258,10 @@ class ramses_sim:
 
         return aexps
 
-    def get_closest_snap(self, aexp=None, zed=None, time=None, param_save=False):
+    def get_closest_snap(self, aexp=None, zed=None, time=None, param_save=None):
+
+        if param_save == None:
+            param_save = self.param_save
 
         assert (
             aexp != None or zed != None or time != None
@@ -252,38 +275,69 @@ class ramses_sim:
             if zed is not None and aexp is None:
                 aexp = 1.0 / (1.0 + zed)
 
-            return self.snap_numbers[np.argmin(np.abs(self.aexps - aexp))]
+            return self.snap_numbers[
+                np.argmin(
+                    np.abs(
+                        self.get_snap_exps(self.snap_numbers, param_save=param_save)
+                        - aexp
+                    )
+                )
+            ]
 
         elif time is not None:
 
             if not hasattr(self, "times"):
                 self.get_snap_times(param_save=param_save)
 
-            return self.snap_numbers[np.argmin(np.abs(self.times - time))]
+            return self.snap_numbers[
+                np.argmin(
+                    np.abs(
+                        self.get_snap_times(self.snap_numbers, param_save=False) - time
+                    )
+                )
+            ]
 
-    def get_snap_times(self, snap_nbs=None, param_save=True):
+    def get_snap_times(self, snap_nbs=None, param_save=None):
+
+        if param_save == None:
+            param_save = self.param_save
 
         save = False
-
-        if not hasattr(self, "cosmo_model"):
-            self.init_cosmo()
 
         if snap_nbs is None:
             snap_nbs = self.snap_numbers
             save = True
-        elif type(snap_nbs) == int:
+        elif type(snap_nbs) in [int, np.int32, np.int64]:
             snap_nbs = [snap_nbs]
         elif type(snap_nbs) == np.ndarray or type(snap_nbs) == list:
             pass
 
-        if not hasattr(self, "aexps"):
-            self.get_snap_exps(param_save=True)
+        if self.cosmo.cosmo_run:
 
-        aexps = self.get_snap_exps(snap_nbs)
+            if not hasattr(self, "cosmo_model"):
+                self.init_cosmo()
 
-        if not "times" in os.listdir(self.path):
+            if not hasattr(self, "aexps"):
+                self.get_snap_exps(param_save=True)
+
+            aexps = self.get_snap_exps(snap_nbs)
 
             times = self.cosmo_model.age(1.0 / aexps - 1.0).value * 1e3  # Myr
+
+        else: #idealised run or test
+        #get times from info files
+
+            times = np.zeros_like(snap_nbs)
+
+            for isnap,snap in enumerate(snap_nbs):
+
+                infos = self.get_info_params(snap,outputs=self.info_outputs)
+
+                times[isnap] = np.float64(infos['time']) * self.unit_t(1.0) / (3600. * 24. * 365. * 1e6) #Myr
+
+
+        #save this work
+        if not "times" in os.listdir(self.path):
 
             if save:
 
@@ -304,11 +358,16 @@ class ramses_sim:
         full_snaps=True,
         mini_snaps=True,
         tar_snaps=True,
-        full_check=True,
+        full_check=False,
     ):
+
         # if full_snaps, look for snaps with hydro and part files etc
         # if mini_snaps, also look for halogal_data files
         # if neither, as long as there is an info file, it's a snap
+
+        # print(
+        #     f"full_snaps={full_snaps}, mini_snaps={mini_snaps}, tar_snaps={tar_snaps}"
+        # )
 
         out_files = os.listdir(self.output_path)
 
@@ -334,7 +393,7 @@ class ramses_sim:
 
         mini_dir_exists = os.path.isdir(os.path.join(self.output_path, "halogal_data"))
 
-        # print(mini_dir_exists)
+        # print(mini_dir_exists
 
         for isnap, snap_nb in enumerate(snap_numbers):
 
@@ -404,6 +463,7 @@ class ramses_sim:
                 #     part_present[isnap] = True
                 # if np.any([f"hydro_{snap_nb:05d}.out" in x for x in snap_files]):
                 #     hydro_present[isnap] = True
+
             if mini_snaps:
                 if mini_dir_exists:
                     fpath_mini = os.path.join(
@@ -421,26 +481,29 @@ class ramses_sim:
                     outputs=self.info_outputs,
                 )
                 info_present[isnap] = True
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
+                if self.verbose:print(f"info file for snap {snap_nb:d} not found, or unreadable")
                 pass
 
-        pick_targets = info_present
-        if full_snaps:
-            pick_targets = pick_targets * ok_files  # * hydro_present * part_present
-        if mini_snaps:
-            pick_targets = (
-                pick_targets + is_mini_snap * info_present
-            )  # don't require mini or full snaps, but count both
-        if tar_snaps:
-            pick_targets = (
-                pick_targets + tar_present * info_present
-            )  # don't require mini or full snaps, but count both
+        if mini_snaps and full_snaps and tar_snaps:
+            # pick_targets = (is_mini_snap + ok_files + tar_present) * info_present
+            pick_targets = info_present
+            pick_targets += (is_mini_snap * info_present)
+            pick_targets += (info_present * ok_files)
+            pick_targets += (tar_present * info_present)
+        elif mini_snaps:
+            pick_targets = (is_mini_snap * info_present)
+        elif full_snaps:
+            pick_targets = (info_present * ok_files)
+        elif tar_snaps:
+            pick_targets = (tar_present * info_present)
 
         if self.verbose:
             print(f"Found {np.sum(pick_targets)} snapshots in {self.output_path:s}")
             print(f"Found", np.sum(info_present), "info files")
-            print(f"Found", hydro_count, " hydro files")
-            print(f"Found", part_count, "part files")
+            if full_check:
+                print(f"Found", hydro_count, " hydro files")
+                print(f"Found", part_count, "part files")
             print(f"Found", np.sum(tar_present), "tar snaps")
             print(f"Found", np.sum(ok_files), "full snaps")
             print(f"Found", np.sum(is_mini_snap), "mini snaps")
@@ -485,7 +548,7 @@ class ramses_sim:
 
                     infos[key] = value
 
-                if il == 17:
+                if 'unit_t' in infos:
                     break
 
         return infos
@@ -493,7 +556,7 @@ class ramses_sim:
     def compute_aexps_lvlchange(self):
         # compute aexp at which level changes occur
         # this is useful for setting up zoom simulations
-        # where you want to change the resolution at a certain aexp
+        # where you want to change the resolution at a certain aexp in comoving parsec
 
         lvls = np.arange(self.levelmin, self.levelmax + 1)
         aexps = 0.8 / 2 ** (self.levelmax - lvls)
@@ -533,6 +596,9 @@ class ramses_sim:
             a = self.namelist["refine_params"]["azoom"]
             b = self.namelist["refine_params"]["bzoom"]
             c = self.namelist["refine_params"]["czoom"]
+
+            if not hasattr(self, "cosmo"):
+                self.init_cosmo()
 
             if ellipse:
                 check_zoom = (
@@ -580,6 +646,9 @@ def get_nml_params(path, name=None):
             ):
                 # print("caught")
                 namelist[cat][key] = namelist[cat][key][0].split("!")[0].strip()
+
+    if 'boxlen' not in namelist['amr_params']:
+        namelist['amr_params']['boxlen'] = 1.0
 
     return namelist
 
